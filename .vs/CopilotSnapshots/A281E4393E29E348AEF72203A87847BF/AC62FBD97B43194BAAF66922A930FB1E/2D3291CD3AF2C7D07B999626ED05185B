@@ -1,0 +1,13 @@
+﻿namespace ConsoleApp4
+{
+    internal class Program
+    {
+        static void Main(string[] args)
+        {
+            Console.WriteLine("Welcome enter no of items:");
+            int n = int.Parse(Console.ReadLine());
+
+
+        }
+    }
+}

@@ -1,0 +1,291 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace ConsoleApp4
+{
+    internal class Program
+    {
+        static void Main(string[] args)
+        {
+            // Minimal demo showing billing strategies, discounts and invoice lifecycle
+            var plan = new Plan("Standard", basePrice: 10m, unitRate: 0.2m);
+            var tenant = new Tenant("Contoso Ltd");
+
+            // Flat rate subscription
+            var subscription = new Subscription(tenant, plan, new FlatRateBilling(100m));
+
+            var billingService = new BillingService();
+
+            // Create invoice (Draft)
+            var invoice = billingService.GenerateInvoice(subscription, usage: 50, discounts: new IDiscountPolicy[] {
+                new SeasonalDiscount(0.10m), // 10%
+                new CouponDiscount(5m)       // $5 off
+            });
+
+            Console.WriteLine($"Invoice state: {invoice.State}, Amount: {invoice.Amount:C}");
+
+            // Finalize invoice
+            invoice.FinalizeInvoice();
+            Console.WriteLine($"Invoice state after finalize: {invoice.State}");
+
+            // Attempt to change amount after finalize (should throw)
+            try
+            {
+                invoice.UpdateAmount(1m);
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.WriteLine($"Expected error when modifying finalized invoice: {ex.Message}");
+            }
+
+            // Pay invoice
+            invoice.MarkPaid();
+            Console.WriteLine($"Invoice state after payment: {invoice.State}");
+
+            // Usage-based example
+            var usageSub = new Subscription(tenant, plan, new UsageBasedBilling(ratePerUnit: 0.5m));
+            var tieredSub = new Subscription(tenant, plan, new TieredBilling(new List<Tier> {
+                new Tier(10, 1m),
+                new Tier(50, 0.75m),
+                new Tier(decimal.MaxValue, 0.5m)
+            }));
+
+            var inv2 = billingService.GenerateInvoice(usageSub, usage: 100, discounts: new IDiscountPolicy[] { new VolumeDiscount(thresholdUsage: 80, discountPercent: 0.15m) });
+            Console.WriteLine($"Usage invoice amount: {inv2.Amount:C}");
+
+            var inv3 = billingService.GenerateInvoice(tieredSub, usage: 60, discounts: Array.Empty<IDiscountPolicy>());
+            Console.WriteLine($"Tiered invoice amount: {inv3.Amount:C}");
+        }
+    }
+
+    // Domain entities
+    public class Tenant
+    {
+        public Guid Id { get; } = Guid.NewGuid();
+        public string Name { get; }
+        public Tenant(string name) => Name = name ?? throw new ArgumentNullException(nameof(name));
+    }
+
+    public class Plan
+    {
+        public Guid Id { get; } = Guid.NewGuid();
+        public string Name { get; }
+        public decimal BasePrice { get; }
+        public decimal UnitRate { get; }
+
+        public Plan(string name, decimal basePrice = 0m, decimal unitRate = 0m)
+        {
+            Name = name ?? throw new ArgumentNullException(nameof(name));
+            BasePrice = basePrice;
+            UnitRate = unitRate;
+        }
+    }
+
+    public class Subscription
+    {
+        public Guid Id { get; } = Guid.NewGuid();
+        public Tenant Tenant { get; }
+        public Plan Plan { get; }
+        public BillingStrategy BillingStrategy { get; }
+
+        public Subscription(Tenant tenant, Plan plan, BillingStrategy billingStrategy)
+        {
+            Tenant = tenant ?? throw new ArgumentNullException(nameof(tenant));
+            Plan = plan ?? throw new ArgumentNullException(nameof(plan));
+            BillingStrategy = billingStrategy ?? throw new ArgumentNullException(nameof(billingStrategy));
+        }
+    }
+
+    // Billing strategy system
+    public abstract class BillingStrategy
+    {
+        public abstract decimal CalculateAmount(Subscription subscription, decimal usage);
+    }
+
+    public class FlatRateBilling : BillingStrategy
+    {
+        public decimal Amount { get; }
+        public FlatRateBilling(decimal amount) => Amount = amount;
+        public override decimal CalculateAmount(Subscription subscription, decimal usage) => Amount;
+    }
+
+    public class UsageBasedBilling : BillingStrategy
+    {
+        public decimal RatePerUnit { get; }
+        public UsageBasedBilling(decimal ratePerUnit) => RatePerUnit = ratePerUnit;
+        public override decimal CalculateAmount(Subscription subscription, decimal usage)
+        {
+            // optionally include plan base price
+            return subscription.Plan.BasePrice + (usage * RatePerUnit);
+        }
+    }
+
+    public class Tier
+    {
+        // UpTo is inclusive upper bound for the tier. Use decimal.MaxValue for "infinite" last tier.
+        public decimal UpTo { get; }
+        public decimal Rate { get; }
+        public Tier(decimal upTo, decimal rate)
+        {
+            UpTo = upTo;
+            Rate = rate;
+        }
+    }
+
+    public class TieredBilling : BillingStrategy
+    {
+        private readonly List<Tier> _tiers;
+        public TieredBilling(IEnumerable<Tier> tiers)
+        {
+            _tiers = tiers?.OrderBy(t => t.UpTo).ToList() ?? throw new ArgumentNullException(nameof(tiers));
+            if (!_tiers.Any()) throw new ArgumentException("At least one tier is required", nameof(tiers));
+        }
+
+        public override decimal CalculateAmount(Subscription subscription, decimal usage)
+        {
+            decimal remaining = usage;
+            decimal lastUpper = 0m;
+            decimal total = subscription.Plan.BasePrice;
+
+            foreach (var tier in _tiers)
+            {
+                if (remaining <= 0) break;
+                var tierCapacity = tier.UpTo - lastUpper;
+                var usedInTier = Math.Min(remaining, tierCapacity);
+                total += usedInTier * tier.Rate;
+                remaining -= usedInTier;
+                lastUpper = tier.UpTo;
+            }
+
+            return total;
+        }
+    }
+
+    // Discounts
+    public interface IDiscountPolicy
+    {
+        string Name { get; }
+        decimal Apply(decimal amount, decimal usage);
+    }
+
+    public class SeasonalDiscount : IDiscountPolicy
+    {
+        public decimal Percentage { get; }
+        public string Name => $"Seasonal {Percentage:P0}";
+        public SeasonalDiscount(decimal percentage)
+        {
+            if (percentage < 0 || percentage > 1) throw new ArgumentOutOfRangeException(nameof(percentage));
+            Percentage = percentage;
+        }
+        public decimal Apply(decimal amount, decimal usage) => amount - (amount * Percentage);
+    }
+
+    public class VolumeDiscount : IDiscountPolicy
+    {
+        public decimal ThresholdAmount { get; }
+        public decimal ThresholdUsage { get; }
+        public decimal DiscountPercent { get; }
+        public string Name => "Volume Discount";
+
+        public VolumeDiscount(decimal thresholdAmount = 0m, decimal thresholdUsage = 0m, decimal discountPercent = 0.1m)
+        {
+            ThresholdAmount = thresholdAmount;
+            ThresholdUsage = thresholdUsage;
+            DiscountPercent = discountPercent;
+        }
+
+        public decimal Apply(decimal amount, decimal usage)
+        {
+            var qualifies = (ThresholdAmount > 0 && amount >= ThresholdAmount) || (ThresholdUsage > 0 && usage >= ThresholdUsage);
+            if (!qualifies) return amount;
+            return amount - (amount * DiscountPercent);
+        }
+    }
+
+    public class CouponDiscount : IDiscountPolicy
+    {
+        public decimal AmountOff { get; }
+        public string Name => "Coupon";
+        public CouponDiscount(decimal amountOff) => AmountOff = amountOff;
+        public decimal Apply(decimal amount, decimal usage) => Math.Max(0m, amount - AmountOff);
+    }
+
+    // Invoice state management
+    public enum InvoiceState
+    {
+        Draft,
+        Finalized,
+        Paid
+    }
+
+    public class Invoice
+    {
+        public Guid Id { get; } = Guid.NewGuid();
+        public Subscription Subscription { get; }
+        public decimal OriginalAmount { get; }
+        public decimal Amount { get; private set; }
+        public InvoiceState State { get; private set; } = InvoiceState.Draft;
+        public List<string> AppliedDiscounts { get; } = new List<string>();
+
+        public Invoice(Subscription subscription, decimal originalAmount)
+        {
+            Subscription = subscription ?? throw new ArgumentNullException(nameof(subscription));
+            OriginalAmount = originalAmount;
+            Amount = originalAmount;
+        }
+
+        // Allowed only in Draft state
+        public void UpdateAmount(decimal newAmount)
+        {
+            if (State != InvoiceState.Draft) throw new InvalidOperationException("Amount can only be modified while invoice is in Draft state.");
+            Amount = newAmount;
+        }
+
+        public void AddAppliedDiscount(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return;
+            AppliedDiscounts.Add(name);
+        }
+
+        public void FinalizeInvoice()
+        {
+            if (State != InvoiceState.Draft) throw new InvalidOperationException("Only Draft invoices can be finalized.");
+            State = InvoiceState.Finalized;
+            // core data becomes immutable by not allowing UpdateAmount after Finalized
+        }
+
+        public void MarkPaid()
+        {
+            if (State != InvoiceState.Finalized) throw new InvalidOperationException("Only Finalized invoices can be marked as Paid.");
+            State = InvoiceState.Paid;
+        }
+    }
+
+    // Billing service
+    public class BillingService
+    {
+        public Invoice GenerateInvoice(Subscription subscription, decimal usage, IEnumerable<IDiscountPolicy> discounts)
+        {
+            if (subscription == null) throw new ArgumentNullException(nameof(subscription));
+            discounts ??= Array.Empty<IDiscountPolicy>();
+
+            var baseAmount = subscription.BillingStrategy.CalculateAmount(subscription, usage);
+            var invoice = new Invoice(subscription, baseAmount);
+
+            decimal current = baseAmount;
+            foreach (var d in discounts)
+            {
+                var after = d.Apply(current, usage);
+                if (after != current)
+                {
+                    invoice.AddAppliedDiscount(d.Name);
+                }
+                current = after;
+            }
+
+            invoice.UpdateAmount(current);
+            return invoice;
+        }
+    }
+}
