@@ -9,7 +9,8 @@ namespace ConsoleApp4
     {
         static void Main(string[] args)
         {
-          Console.WriteLine("Enter your name:");
+        Console.WriteLine("Welcome to the TENANT house provider!");
+            Console.WriteLine("Enter your name:");
           string name = Console.ReadLine();
           Console.WriteLine("Hello, " + name + "!");
           Console.WriteLine("select your plan : \n1. Basic(1000)\n2. Premium(2000) 10% off\n3. Pro(3000) 20% off");
@@ -44,19 +45,20 @@ namespace ConsoleApp4
            {
                if (usageType == 1)
                {
-                   Console.WriteLine("You have selected Personal usage.");
+                   Console.WriteLine("You have selected Personal usage.Now proceeding to payment...");
                    break;
                }
                else if (usageType == 2)
                {
-                   Console.WriteLine("You have selected Business usage.");
+                   Console.WriteLine("You have selected Business usage.Now proceeding to payment...");
                    break;
                }
                else
                {
-                   Console.WriteLine("Invalid selection. Please try again.");
+                   Console.WriteLine("Invalid selection. Please try again.Now proceeding to payment...");
                    usageType = int.Parse(Console.ReadLine());
                }
+
            }
         }
     }
